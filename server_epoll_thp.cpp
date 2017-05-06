@@ -19,6 +19,7 @@
 #include <sys/types.h> /* See NOTES */
 #include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
 #define MAXEVENTS 64
 
@@ -34,7 +35,22 @@
     usage(argc, argv);             \
     exit(-1)
 
+#define LOG_ERROR(fmt, ...) \
+    printf("error:[%d] " fmt "\n", getpid(), ##__VA_ARGS__)
+
+#define LOG_INFO(fmt, ...) \
+    printf("info :[%d] " fmt "\n", getpid(), ##__VA_ARGS__)
+
+#ifdef DEBUG
+#define LOG_DEBUG(fmt, ...) \
+    printf("debug:[%d] " fmt "\n", getpid(), ##__VA_ARGS__)
+#else
+#define LOG_DEBUG(fmt, ...)
+#endif
+
 #define EPOLL_LOCK "epoll_lock"
+
+int client_num = 0;
 
 struct argset {
     char *addr;
@@ -42,17 +58,17 @@ struct argset {
     bool reuseaddr;
     bool reuseport;
     int proc_num;
-    argset() : addr(NULL), port("9000"), reuseaddr(false), reuseport(false), proc_num(1) {}
+    argset() : addr(NULL), port((char *)"9000"), reuseaddr(false), reuseport(false), proc_num(1) {}
 };
 
 void usage(int argc, char **argv) {
-    printf("param error!\n");
-    printf("usage: %s [-i ip] [-p port] [-ap] [-n proc_num]\n", argv[0]);
-    printf("\t-a set reuse addr\n");
-    printf("\t-p set reuse port\n");
-    printf("\t-i set bind addr, default value is INADDR_ANY\n");
-    printf("\t-p set bind port, default value is 9000\n");
-    printf("\t-n set process num, default value is 1\n\n");
+    LOG_INFO("param error!");
+    LOG_INFO("usage: %s [-i ip] [-p port] [-ap] [-n proc_num]", argv[0]);
+    LOG_INFO("\t-a set reuse addr");
+    LOG_INFO("\t-p set reuse port");
+    LOG_INFO("\t-i set bind addr, default value is INADDR_ANY");
+    LOG_INFO("\t-p set bind port, default value is 9000");
+    LOG_INFO("\t-n set process num, default value is 1\n");
 }
 
 void parse_cmd(int argc, char **argv, struct argset *set) {
@@ -83,10 +99,10 @@ void parse_cmd(int argc, char **argv, struct argset *set) {
         }
     }
 
-    printf("\nset addr = %s\n", set->addr ? set->addr : "INADDR_ANY(default value)");
-    printf("set port = %s\n", set->port ? set->port : "9000(default value)");
-    printf("set %s %s\n", set->reuseaddr ? "reuseaddr" : "", set->reuseport ? "reuseport" : "");
-    printf("set proc num = %d\n\n", set->proc_num > 1 ? set->proc_num : 1);
+    LOG_INFO("\nset addr = %s", set->addr ? set->addr : "INADDR_ANY(default value)");
+    LOG_INFO("set port = %s", set->port ? set->port : "9000(default value)");
+    LOG_INFO("set %s %s", set->reuseaddr ? "reuseaddr" : "", set->reuseport ? "reuseport" : "");
+    LOG_INFO("set proc num = %d\n", set->proc_num > 1 ? set->proc_num : 1);
 }
 
 void set_reuseaddr(int lfd) {
@@ -115,6 +131,73 @@ void set_noblock(int cfd) {
     }
 }
 
+void proc_accept_event(int lfd, int efd) {
+    //one or more new connections
+    while (1) {
+        int cfd = accept(lfd, (struct sockaddr *) NULL, NULL);
+        if (cfd == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                //have proc all new connections
+                break;
+            } else {
+                ERREXIT("call accept failed!");
+            }
+        }
+
+        set_noblock(cfd);
+
+        struct epoll_event event;
+        event.data.fd = cfd;
+        event.events = EPOLLIN | EPOLLET;
+        if (epoll_ctl(efd, EPOLL_CTL_ADD, cfd, &event) == -1) {
+            ERREXIT("call epoll_ctl failed!");
+        }
+
+        LOG_INFO("accept a new client\t [%d]", ++client_num);
+    }
+}
+
+void proc_rw_event(int fd) {
+#if 0
+    //have data need to send
+    LOG_DEBUG("send data to one client begin:");
+    char *pbuf = new char[1024];
+    memset(pbuf, 0, 1024);
+
+    snprintf(pbuf, 1024, "[%d] accept a new client\n", getpid());
+    LOG_INFO(pbuf);
+    send(fd, pbuf, strlen(pbuf) + 1, 0);
+
+    delete[] pbuf;
+    close(fd);
+    LOG_DEBUG("send data to a client end~");
+#endif
+
+#if 1
+    //have data need to read
+    LOG_DEBUG("recieve data from a client begin:");
+    while (1) {
+        char *pbuf = new char[1024];
+        memset(pbuf, 0, 1024);
+
+        int nread = read(fd, pbuf, 1024);
+        if (nread <= 0) {
+            if (nread == 0 || errno == EAGAIN) {
+                //have proc all read data
+                break;
+            } else {
+                ERREXIT("call read data failed!");
+            }
+        }
+        LOG_INFO("%s", std::string(pbuf, nread).c_str());
+
+        delete[] pbuf;
+    }
+    close(fd);
+    LOG_DEBUG("recieve data from a client end~");
+#endif
+}
+
 int main(int argc, char **argv) {
     struct argset argset;
     parse_cmd(argc, argv, &argset);
@@ -129,6 +212,8 @@ int main(int argc, char **argv) {
 
     if (argset.reuseport)
         set_reuseport(lfd);
+
+    set_noblock(lfd);
 
     struct sockaddr_in serveraddr;
     serveraddr.sin_family = AF_INET;
@@ -149,11 +234,10 @@ int main(int argc, char **argv) {
 
     //init epoll listen lock
     sem_unlink(EPOLL_LOCK);
-    sem_t *mutex = sem_open(EPOLL_LOCK, O_CREAT, 0666, 1);
-    if (mutex == SEM_FAILED) {
+    sem_t *lock = sem_open(EPOLL_LOCK, O_CREAT, 0666, 1);
+    if (lock == SEM_FAILED) {
         ERREXIT("semaphore initilization!");
     }
-    bool is_got_lock = false;
 
     int pid = 0;
     for (int i = 0; i < argset.proc_num; ++i) {
@@ -172,7 +256,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    printf("start a new process [%d]\n", getpid());
+    LOG_INFO("start a new process");
 
     int efd = epoll_create1(0);
     if (efd == -1) {
@@ -184,87 +268,66 @@ int main(int argc, char **argv) {
     // malloc with init 0
     struct epoll_event *events = (struct epoll_event *) calloc(MAXEVENTS, sizeof(event));
 
-    int wait_time_ms = -1;
-
-    int client_num = 0;
+    int wait_time_ms = 1000;
+    bool is_got_lock = false;
     while (1) {
+        std::vector<struct epoll_event *> delay_events;
         //try to get the lock
-        if (sem_trywait(mutex) == 0) {
-            is_got_lock = true;
-            event.data.fd = lfd;
-            event.events = EPOLLIN | EPOLLET;
-
-            if (epoll_ctl(efd, EPOLL_CTL_ADD, lfd, &event) == -1) {
-                ERREXIT("call epoll_ctl failed!");
+        if (sem_trywait(lock) == 0) {
+            if (is_got_lock == false) {
+                event.data.fd = lfd;
+                event.events = EPOLLIN | EPOLLET;
+                if (epoll_ctl(efd, EPOLL_CTL_ADD, lfd, &event) == -1) {
+                    ERREXIT("call epoll_ctl failed!");
+                }
+                is_got_lock = true;
             }
+            LOG_DEBUG("get lock");
         } else {
             if (errno != EAGAIN) {
                 ERREXIT("call sem_trywait failed!");
             }
-            if (epoll_ctl(efd, EPOLL_CTL_DEL, lfd, NULL) == -1) {
-                ERREXIT("call epoll_ctl failed!");
+            if (is_got_lock) {
+                if (epoll_ctl(efd, EPOLL_CTL_DEL, lfd, NULL) == -1) {
+                    if (errno != ENOENT) {
+                        ERREXIT("call epoll_ctl failed!");
+                    }
+                }
+                is_got_lock = false;
             }
+            LOG_DEBUG("don't get lock");
         }
 
         int n = epoll_wait(efd, events, MAXEVENTS, wait_time_ms);
-        printf("[%d] wake up\n", getpid());
         for (int i = 0; i < n; ++i) {
             if (events[i].events & EPOLLERR ||
                 events[i].events & EPOLLHUP ||
                 !(events[i].events & EPOLLIN)) {
                 //event filter
-                perror("epoll wait error!");
+                LOG_ERROR("epoll wait error!");
                 close(events[i].data.fd);
                 continue;
             } else if (events[i].data.fd == lfd) {
+                LOG_INFO("wake up");
                 //sleep(1);
                 //one or more new connections
-                while (1) {
-                    int cfd = accept(lfd, (struct sockaddr *) NULL, NULL);
-                    if (cfd == -1) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                            //have proc all new connections
-                            break;
-                        } else {
-                            ERREXIT("call accept failed!");
-                        }
-                    }
-
-                    set_noblock(cfd);
-
-                    event.data.fd = cfd;
-                    event.events = EPOLLIN | EPOLLET;
-
-                    if (epoll_ctl(efd, EPOLL_CTL_ADD, cfd, &event) == -1) {
-                        ERREXIT("call epoll_ctl failed!");
-                    }
-
-                    printf("[%d] accept a new client\t [%d]\n", getpid(), ++client_num);
-                }
+                proc_accept_event(lfd, efd);
                 continue;
             } else {
-                //have data need to read
-                printf("[%d] recieve data from a client begin:\n", getpid());
-                while (1) {
-                    char *pbuf = new char[1024];
-                    memset(pbuf, 0, 1024);
+                if (is_got_lock)
+                    delay_events.push_back(&(events[i]));
+                else
+                    proc_rw_event(events[i].data.fd);
+            }
+        }
 
-                    int nread = read(events[i].data.fd, pbuf, 1024);
-                    if (nread <= 0) {
-                        if (nread == 0 || errno == EAGAIN) {
-                            //have proc all read data
-                            break;
-                        } else {
-                            ERREXIT("call read data failed!");
-                        }
-                    }
-
-                    printf("%s", std::string(pbuf, nread).c_str());
-
-                    delete[] pbuf;
-                }
-                close(events[i].data.fd);
-                printf("\n[%d] recieve data from a client end~\n", getpid());
+        if (is_got_lock) {
+            sem_post(lock);
+            LOG_DEBUG("put lock");
+            std::vector<struct epoll_event *>::iterator it;
+            for (it = delay_events.begin(); it != delay_events.end(); ++it) {
+                proc_rw_event((*it)->data.fd);
+                sleep(1);
             }
         }
     }

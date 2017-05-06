@@ -6,6 +6,8 @@
  */
 
 #include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,8 +18,6 @@
 #include <sys/types.h> /* See NOTES */
 #include <sys/wait.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
 
 #define MAXEVENTS 64
 
@@ -127,6 +127,8 @@ int main(int argc, char **argv) {
     if (argset.reuseport)
         set_reuseport(lfd);
 
+    set_noblock(lfd);
+
     struct sockaddr_in serveraddr;
     serveraddr.sin_family = AF_INET;
     serveraddr.sin_port = htons(atol(argset.port));
@@ -178,7 +180,7 @@ int main(int argc, char **argv) {
     }
 
     // malloc with init 0
-    struct epoll_event *events = (struct epoll_event *)calloc(MAXEVENTS, sizeof(event));
+    struct epoll_event *events = (struct epoll_event *) calloc(MAXEVENTS, sizeof(event));
 
     int wait_time_ms = -1;
 
