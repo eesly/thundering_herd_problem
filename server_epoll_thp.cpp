@@ -99,7 +99,7 @@ void parse_cmd(int argc, char **argv, struct argset *set) {
         }
     }
 
-    LOG_INFO("\nset addr = %s", set->addr ? set->addr : "INADDR_ANY(default value)");
+    LOG_INFO("set addr = %s", set->addr ? set->addr : "INADDR_ANY(default value)");
     LOG_INFO("set port = %s", set->port ? set->port : "9000(default value)");
     LOG_INFO("set %s %s", set->reuseaddr ? "reuseaddr" : "", set->reuseport ? "reuseport" : "");
     LOG_INFO("set proc num = %d\n", set->proc_num > 1 ? set->proc_num : 1);

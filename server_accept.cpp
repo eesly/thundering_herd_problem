@@ -8,12 +8,16 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <stdio.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h> /* See NOTES */
 #include <sys/wait.h>
 #include <unistd.h>
+#include <string>
+#include <unistd.h>
+#include <fcntl.h>
 
 const int PROC_NUM = 2;
 
@@ -96,6 +100,41 @@ void set_reuseport(int lfd) {
     }
 }
 
+void set_noblock(int cfd) {
+    int flag = fcntl(cfd, F_GETFL, 0);
+    if (flag == -1) {
+        ERREXIT("set set_noblock failed, get flag error!");
+    }
+
+    flag |= O_NONBLOCK;
+    if (fcntl(cfd, F_SETFL, flag) == -1) {
+        ERREXIT("set set_noblock failed, set flag error!");
+    }
+}
+
+void proc_rw_event(int fd) {
+    //have data need to read
+    set_noblock(fd);
+    while (1) {
+        char *pbuf = new char[1024];
+        memset(pbuf, 0, 1024);
+
+        int nread = read(fd, pbuf, 1024);
+        if (nread <= 0) {
+            if (nread == 0 || errno == EAGAIN) {
+                //have proc all read data
+                break;
+            } else {
+                ERREXIT("call read data failed!");
+            }
+        }
+        printf("[%d] ""%s", getpid(), std::string(pbuf, nread).c_str());
+
+        delete[] pbuf;
+    }
+    close(fd);
+}
+
 int main(int argc, char **argv) {
     struct argset argset;
     parse_cmd(argc, argv, &argset);
@@ -153,14 +192,8 @@ int main(int argc, char **argv) {
         if (connfd == -1) {
             ERREXIT("call accept failed!");
         }
-        char *pbuf = new char[1024];
-        memset(pbuf, 0, 1024);
-        snprintf(pbuf, 1024, "[%d] accept a new client\t [%d]\n", getpid(), ++client_num);
 
-        printf(pbuf);
-        send(connfd, pbuf, strlen(pbuf) + 1, 0);
-
-        close(connfd);
+        proc_rw_event(connfd);
     }
 
     return 0;
