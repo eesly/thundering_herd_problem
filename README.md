@@ -1,5 +1,7 @@
 # thundering_herd_problem
 
+主要写了三个例子，server_accept.cpp和server_epoll.cpp分别验证accept和epoll的惊群问题，server_epoll_thp.cpp是仿照nginx避免惊群的方式的一个简单实现。
+
 ### get start
 g++ -o server_accept server_accept.cpp -pthread -g  
 g++ -o server_epoll server_epoll.cpp -pthread -g  
